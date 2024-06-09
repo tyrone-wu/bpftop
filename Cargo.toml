@@ -8,3 +8,4 @@ license = "Apache-2.0"
 edition = "2021"
 
 [workspace.dependencies]
+anyhow = "1.0.86"
