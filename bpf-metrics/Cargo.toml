@@ -1,0 +1,24 @@
+[package]
+name = "bpf-metrics"
+version = "0.1.0"
+description = "eBPF metrics emitter based on OpenMetrics standards"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+aya = { git = "https://github.com/tyrone-wu/aya.git", branch = "dev" }
+aya-obj = { git = "https://github.com/tyrone-wu/aya.git", branch = "dev" }
+prometheus-client = "0.22.2"
+
+[dev-dependencies]
+http-body-util = "0.1.2"
+hyper = { version = "1.3.1", features = ["server", "http1"] }
+hyper-util = { version = "0.1.5", features = ["tokio"] }
+tokio = { version = "1.38.0", features = ["rt-multi-thread", "net", "macros", "signal"] }
+
+[features]
+default = ["metrics", "bpf-stats"]
+metrics = []
+bpf-stats = []
