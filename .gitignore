@@ -8,3 +8,4 @@ vendor/
 *.tar.gz
 rpmbuild/
 *.rpm
+data/

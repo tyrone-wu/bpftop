@@ -1,0 +1,83 @@
+{{template "head" .}}
+
+{{template "prom_content_head"}}
+
+<h3>eBPF Programs</h3>
+
+<div style="display: flex; align-items: center; justify-content: center;">
+  <table class="table table-sm table-striped table-bordered" style="width: 90%">
+    <!-- headers -->
+    <tr>
+      <th>ID</th>
+      <th>Type</th>
+      <th>Name</th>
+      <th>Period Avg Runtime (ns)</th>
+      <th>Total Avg Runtime (ns)</th>
+      <th>Events/src</th>
+      <th>Total CPU %</th>
+      <th>Host</th>
+    </tr>
+
+    <!-- actual data -->
+    {{ range query "bpf_prog_execution_count_total" | sortByLabel "id" }}
+    <tr>
+      {{ $id := .Labels.id }}
+      {{ $instance := .Labels.instance }}
+
+      {{ $runtime_delta := printf "idelta(bpf_prog_run_time_nanoseconds_total{id='%s',instance='%s'}[2s])" $id $instance }}
+      {{ $run_cnt_delta := printf "idelta(bpf_prog_execution_count_total{id='%s',instance='%s'}[2s])" $id $instance }}
+      {{ $period_ns := printf "idelta(bpf_prog_uptime_nanoseconds_total{id='%s',instance='%s'}[2s])" $id $instance }}
+
+      {{ $total_average_runtime_ns := printf "bpf_prog_run_time_nanoseconds_total{id='%s',instance='%s'} / bpf_prog_execution_count_total{id='%s',instance='%s'}" $id $instance $id $instance }}
+
+      <!-- id -->
+      <td>
+        {{ .Labels.id }}
+      </td>
+
+      <!-- type -->
+      <td>
+        {{ .Labels.prog_type }}
+      </td>
+
+      <!-- name -->
+      <td>
+        {{ .Labels.name }}
+      </td>
+
+      <!-- period avg runtime -->
+      <td>
+        {{ template "prom_query_drilldown" (args (printf "round(%s / %s, 0.01)" $runtime_delta $run_cnt_delta)) }}
+      </td>
+
+      <!-- total avg runtime -->
+      <td>
+        {{ template "prom_query_drilldown" (args (printf "round(%s, 0.01)" $total_average_runtime_ns)) }}
+      </td>
+
+      <!-- events/sec -->
+      <td>
+        {{ template "prom_query_drilldown" (args $run_cnt_delta) }}
+      </td>
+
+      <!-- total cpu -->
+      <td>
+        {{ template "prom_query_drilldown" (args (printf "round(%s / %s * 100, 0.0001)" $runtime_delta $period_ns)) }}%
+      </td>
+
+      <!-- host -->
+      <td>
+        {{ .Labels.instance }}
+      </td>
+    </tr>
+    {{ else }}
+    <tr>
+      <td colspan=8>No eBPF programs running</td>
+    </tr>
+    {{ end }}
+  </table>
+</div>
+
+{{template "prom_content_tail" .}}
+
+{{template "tail"}}
