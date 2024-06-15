@@ -6,7 +6,7 @@
 //! metrics using the OpenMetrics exposition format.
 //!
 //! ```no_run
-//! use bpf_metrics::{BpfMetrics, ProgMetric};
+//! use bpf_metrics::{BpfMetrics, MapMetric, ProgMetric};
 //!
 //! // Init registry
 //! let mut bpf_metrics = BpfMetrics::new();
@@ -15,8 +15,8 @@
 //! let prog_metrics = [ProgMetric::Uptime, ProgMetric::MemoryLocked];
 //! bpf_metrics.register_prog_metrics(prog_metrics.iter());
 //!
-//! // let map_metrics = [];
-//! // bpf_metrics.register_map_metrics(&map_metrics);
+//! let map_metrics = [MapMetric::MaxEntries];
+//! bpf_metrics.register_map_metrics(map_metrics.iter());
 //!
 //! // let link_metrics = [];
 //! // bpf_metrics.register_link_metrics(&link_metrics);

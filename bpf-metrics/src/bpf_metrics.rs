@@ -3,8 +3,10 @@
 use prometheus_client::{encoding::text, registry::Registry};
 
 use crate::{
+    map_info::MapLabels,
     metric_collection::{MetricCollection, MetricFamily},
     prog_info::{ProgLabels, ProgMetric},
+    MapMetric,
 };
 
 /// BPF metrics registry and collector.
@@ -88,5 +90,28 @@ impl BpfMetrics {
             metric_options,
         );
         self.metrics.push(Box::new(prog_metrics));
+    }
+
+    /// Register [`MapMetric`]s of interest into the registry.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use bpf_metrics::{BpfMetrics, MapMetric};
+    ///
+    /// let mut bpf_metrics = BpfMetrics::new();
+    ///
+    /// let metrics = [MapMetric::MaxEntries];
+    /// bpf_metrics.register_map_metrics(metrics.iter());
+    /// ```
+    pub fn register_map_metrics<'a>(
+        &mut self,
+        metric_options: impl Iterator<Item = &'a MapMetric>,
+    ) {
+        let map_metrics = MetricCollection::<MapMetric, MapLabels>::init_with_metrics(
+            &mut self.registry,
+            metric_options,
+        );
+        self.metrics.push(Box::new(map_metrics));
     }
 }

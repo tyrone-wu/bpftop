@@ -3,20 +3,22 @@
 use std::{thread::sleep, time::Duration};
 
 use anyhow::Result;
-use bpf_metrics::{bpf_stats::enable_stats_fd, BpfMetrics, ProgMetric};
+use bpf_metrics::{bpf_stats::enable_stats_fd, BpfMetrics, MapMetric, ProgMetric};
 
 fn main() -> Result<()> {
     let mut bpf_metrics = BpfMetrics::new();
     let prog_metrics = [
-        ProgMetric::SizeJitted,
-        ProgMetric::SizeTranslated,
-        ProgMetric::Uptime,
         ProgMetric::RunTime,
         ProgMetric::RunCount,
-        ProgMetric::VerifiedInstructions,
         ProgMetric::MemoryLocked,
     ];
     bpf_metrics.register_prog_metrics(prog_metrics.iter());
+    let map_metrics = [
+        MapMetric::KeySize,
+        MapMetric::ValueSize,
+        MapMetric::MaxEntries,
+    ];
+    bpf_metrics.register_map_metrics(map_metrics.iter());
 
     let _fd = match enable_stats_fd()? {
         Some(fd) => fd,
