@@ -25,7 +25,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ebpf_metrics::EbpfMetrics;
+use ebpf_metrics::EbpfOpenMetrics;
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use pid_iter::PidIterSkelBuilder;
 use procfs::KernelVersion;
@@ -49,6 +49,7 @@ use tui_input::backend::crossterm::EventHandler;
 mod app;
 mod bpf_program;
 mod helpers;
+mod metrics;
 mod pid_iter {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -130,14 +131,14 @@ fn main() -> Result<()> {
     registry.try_init()?;
 
     let kernel_version = KernelVersion::current()?;
-    let mut ebpf_metrics = EbpfMetrics::new();
+    let mut ebpf_metrics = EbpfOpenMetrics::new();
     let mut iter_link = None;
 
     info!("Starting bpftop...");
     info!("Kernel: {:?}", kernel_version);
 
     // `BPF_ENABLE_STATS` was introduced in kernel 5.8, however, some distros backport
-    // certain feature (e.g. Redhat), so checking kernel version may not be sufficient in detecting 
+    // certain feature (e.g. Redhat), so checking kernel version may not be sufficient in detecting
     // this feature.
     //
     // First probe feature by attempting BPF syscall. If that doesn't work, then use `procfs` method.
@@ -150,19 +151,19 @@ fn main() -> Result<()> {
         let mut skel = open_skel.load()?;
         skel.attach()?;
         iter_link = skel.links.bpftop_iter;
-    } else if EbpfMetrics::is_stats_enabled_procfs()? {
+    } else if EbpfOpenMetrics::is_stats_enabled_procfs()? {
         info!("BPF stats already enabled via procfs");
     } else {
-        EbpfMetrics::enable_stats_procfs()?;
+        EbpfOpenMetrics::enable_stats_procfs()?;
         info!("Enabled BPF stats via procfs");
     }
-    let stats_enabled_via_procfs = EbpfMetrics::is_stats_enabled_procfs()?;
+    let stats_enabled_via_procfs = EbpfOpenMetrics::is_stats_enabled_procfs()?;
 
     // capture panic to disable BPF stats via procfs
     let previous_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
         if stats_enabled_via_procfs {
-            if let Err(err) = EbpfMetrics::disable_stats_procfs() {
+            if let Err(err) = EbpfOpenMetrics::disable_stats_procfs() {
                 eprintln!("Failed to disable BPF stats via procfs: {:?}", err);
             }
         }
@@ -174,12 +175,12 @@ fn main() -> Result<()> {
 
     // create app and run the draw loop
     let app = App::new();
-    app.start_background_thread(iter_link);
+    app.start_background_thread(iter_link, ebpf_metrics.metrics_handler);
     let res = run_draw_loop(&mut terminal_manager.terminal, app);
 
     // disable BPF stats via procfs if needed
     if stats_enabled_via_procfs {
-        EbpfMetrics::disable_stats_procfs()?;
+        EbpfOpenMetrics::disable_stats_procfs()?;
     }
 
     #[allow(clippy::question_mark)]

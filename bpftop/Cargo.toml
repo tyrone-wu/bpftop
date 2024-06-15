@@ -23,3 +23,4 @@ circular-buffer = "0.1.7"
 procfs = "0.16.0"
 tui-input = "0.8.0"
 ebpf-metrics = { path = "../ebpf-metrics" }
+nom = "7.1.3"

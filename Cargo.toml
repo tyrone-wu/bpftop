@@ -9,3 +9,4 @@ edition = "2021"
 
 [workspace.dependencies]
 anyhow = "1.0.86"
+aya = { git = "https://github.com/tyrone-wu/aya.git", branch = "dev" }
