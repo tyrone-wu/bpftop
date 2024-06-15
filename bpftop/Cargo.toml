@@ -22,4 +22,4 @@ nix = { version = "0.29.0", features = ["user"] }
 circular-buffer = "0.1.7"
 procfs = "0.16.0"
 tui-input = "0.8.0"
-bpf-metrics = { path = "../bpf-metrics" }
+bpf-metrics = { path = "../bpf-metrics", default-features = false, features = ["bpf-stats"] }

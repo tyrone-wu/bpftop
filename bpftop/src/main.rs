@@ -15,38 +15,41 @@
  *  limitations under the License.
  *
  */
-use crate::helpers::format_percent;
-use anyhow::{anyhow, Context, Result};
-use app::SortColumn;
-use app::{App, Mode};
+use std::{
+    io::{self, Stdout},
+    panic,
+    time::Duration,
+};
+
+use anyhow::{anyhow, Result};
+use app::{App, Mode, SortColumn};
+use bpf_metrics::bpf_stats;
 use bpf_program::BpfProgram;
-use crossterm::event::{self, poll, Event, KeyCode, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+use crossterm::{
+    event::{self, poll, Event, KeyCode, KeyModifiers},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
-use libbpf_sys::bpf_enable_stats;
 use pid_iter::PidIterSkelBuilder;
 use procfs::KernelVersion;
-use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::Line;
-use ratatui::widgets::{
-    Axis, Block, BorderType, Borders, Cell, Chart, Dataset, GraphType, Padding, Paragraph, Row,
-    Table,
+use ratatui::{
+    backend::{Backend, CrosstermBackend},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style, Stylize},
+    symbols,
+    text::Line,
+    widgets::{
+        Axis, Block, BorderType, Borders, Cell, Chart, Dataset, GraphType, Padding, Paragraph, Row,
+        Table,
+    },
+    Frame, Terminal,
 };
-use ratatui::{symbols, Frame, Terminal};
-use std::fs;
-use std::io::{self, Stdout};
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::panic;
-use std::time::Duration;
 use tracing::info;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tui_input::backend::crossterm::EventHandler;
+
+use crate::helpers::format_percent;
 
 mod app;
 mod bpf_program;
@@ -65,8 +68,6 @@ const FILTER_FOOTER: &str = "(↵,Esc) back";
 const SORT_CONTROLS_FOOTER: &str =
     "(↑) asc | (↓) desc | (Backspace) clear | (←) move left | (→) move right";
 const SORT_INFO_FOOTER: &str = "(Esc) back";
-
-const PROCFS_BPF_STATS_ENABLED: &str = "/proc/sys/kernel/bpf_stats_enabled";
 
 impl From<&BpfProgram> for Row<'_> {
     fn from(bpf_program: &BpfProgram) -> Self {
@@ -132,40 +133,45 @@ fn main() -> Result<()> {
     registry.try_init()?;
 
     let kernel_version = KernelVersion::current()?;
-    let _owned_fd: OwnedFd;
-    let mut stats_enabled_via_procfs = false;
     let mut iter_link = None;
 
     info!("Starting bpftop...");
     info!("Kernel: {:?}", kernel_version);
 
-    // enable BPF stats via syscall if kernel version >= 5.8
     if kernel_version >= KernelVersion::new(5, 8, 0) {
-        let fd = unsafe { bpf_enable_stats(libbpf_sys::BPF_STATS_RUN_TIME) };
-        if fd < 0 {
-            return Err(anyhow!("Failed to enable BPF stats via syscall"));
-        }
-        _owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
-        info!("Enabled BPF stats via syscall");
-
         // load and attach pid_iter BPF program to get process information
         let skel_builder = PidIterSkelBuilder::default();
         let open_skel = skel_builder.open()?;
         let mut skel = open_skel.load()?;
         skel.attach()?;
         iter_link = skel.links.bpftop_iter;
+    }
+
+    // Probe feature by attempting `BPF_ENABLE_STATS` syscall since it may be backported on this
+    // kernel. If it returns `EINVAL`, then enable via `procfs` method.
+    //
+    // If BPF stats was successfully enabled via syscall and is also enabled via procfs, disable
+    // BPF stats for procfs in favor of syscall method.
+    info!("Attempting BPF_ENABLE_STATS syscall");
+    let _owned_fd = bpf_stats::enable_stats_fd()?;
+    let mut stats_enabled_via_procfs = bpf_stats::is_stats_enabled_procfs()?;
+    if _owned_fd.is_some() {
+        info!("Successfully enabled BPF stats via syscall");
+
+        if stats_enabled_via_procfs {
+            info!(" BPF stats detected to be enabled in procfs");
+            info!("Disabling BPF stats in procfs in favor of syscall");
+            bpf_stats::disable_stats_procfs()?;
+        }
     } else {
-        // otherwise, enable via procfs
-        // but first check if procfs bpf stats were already enabled
-        if procfs_bpf_stats_is_enabled()? {
+        info!("BPF_ENABLE_STATS not available on the host");
+
+        if stats_enabled_via_procfs {
             info!("BPF stats already enabled via procfs");
         } else {
-            fs::write(PROCFS_BPF_STATS_ENABLED, b"1").context(format!(
-                "Failed to enable BPF stats via {}",
-                PROCFS_BPF_STATS_ENABLED
-            ))?;
+            info!("Enabling BPF stats via procfs");
+            bpf_stats::enable_stats_procfs()?;
             stats_enabled_via_procfs = true;
-            info!("Enabled BPF stats via procfs");
         }
     }
 
@@ -173,9 +179,10 @@ fn main() -> Result<()> {
     let previous_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
         if stats_enabled_via_procfs {
-            if let Err(err) = procs_bfs_stats_disable() {
+            if let Err(err) = bpf_stats::disable_stats_procfs() {
                 eprintln!("Failed to disable BPF stats via procfs: {:?}", err);
             }
+            info!("Disabled BPF stats via procfs");
         }
 
         previous_hook(panic_info);
@@ -191,7 +198,8 @@ fn main() -> Result<()> {
 
     // disable BPF stats via procfs if needed
     if stats_enabled_via_procfs {
-        procs_bfs_stats_disable()?;
+        bpf_stats::disable_stats_procfs()?;
+        info!("Disabled BPF stats via procfs");
     }
 
     #[allow(clippy::question_mark)]
@@ -200,20 +208,6 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn procs_bfs_stats_disable() -> Result<()> {
-    fs::write(PROCFS_BPF_STATS_ENABLED, b"0").context(format!(
-        "Failed to disable BPF stats via {}",
-        PROCFS_BPF_STATS_ENABLED
-    ))?;
-    Ok(())
-}
-
-fn procfs_bpf_stats_is_enabled() -> Result<bool> {
-    fs::read_to_string(PROCFS_BPF_STATS_ENABLED)
-        .context(format!("Failed to read from {}", PROCFS_BPF_STATS_ENABLED))
-        .map(|value| value.trim() == "1")
 }
 
 fn run_draw_loop<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
