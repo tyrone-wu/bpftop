@@ -54,6 +54,7 @@ use crate::helpers::format_percent;
 mod app;
 mod bpf_program;
 mod helpers;
+mod metrics;
 mod pid_iter {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),

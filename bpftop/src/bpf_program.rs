@@ -15,10 +15,7 @@
  *  limitations under the License.
  *
  */
-use std::{
-    fmt::{self},
-    time::Instant,
-};
+use std::fmt;
 
 #[derive(Clone, Debug)]
 pub struct BpfProgram {
@@ -29,8 +26,8 @@ pub struct BpfProgram {
     pub run_time_ns: u64,
     pub prev_run_cnt: u64,
     pub run_cnt: u64,
-    pub instant: Instant,
-    pub period_ns: u128,
+    pub uptime: u64,
+    pub period_ns: u64,
     // List of processes that hold a reference to this BPF program
     pub processes: Vec<Process>,
 }
@@ -109,7 +106,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 1,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
@@ -122,7 +119,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 1,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
@@ -141,7 +138,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 1,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
@@ -158,7 +155,7 @@ mod tests {
             run_time_ns: 1000,
             prev_run_cnt: 1,
             run_cnt: 5,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 1000,
             processes: vec![],
         };
@@ -175,7 +172,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 1,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
@@ -192,7 +189,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 5,
             run_cnt: 8,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
@@ -209,7 +206,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 10,
             run_cnt: 50,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 1_000_000_000,
             processes: vec![],
         };
@@ -226,7 +223,7 @@ mod tests {
             run_time_ns: 200_000_000,
             prev_run_cnt: 0,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 1_000_000_000,
             processes: vec![],
         };

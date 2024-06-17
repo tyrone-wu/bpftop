@@ -15,10 +15,6 @@
  *  limitations under the License.
  *
  */
-use crate::bpf_program::{BpfProgram, Process};
-use circular_buffer::CircularBuffer;
-use libbpf_rs::{query::ProgInfoIter, Iter, Link};
-use ratatui::widgets::TableState;
 use std::{
     collections::HashMap,
     io::Read,
@@ -27,8 +23,18 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+use bpf_metrics::{BpfMetrics, ProgMetric};
+use circular_buffer::CircularBuffer;
+use libbpf_rs::{Iter, Link};
+use ratatui::widgets::TableState;
 use tracing::error;
 use tui_input::Input;
+
+use crate::{
+    bpf_program::{BpfProgram, Process},
+    metrics::deserialize,
+};
 
 pub struct App {
     pub mode: Mode,
@@ -102,10 +108,7 @@ fn get_pid_map(link: &Option<Link>) -> HashMap<u32, Vec<Process>> {
                         comm: String::from_utf8_lossy(&pid_entry.comm).to_string(),
                     };
 
-                    pid_map
-                        .entry(pid_entry.id)
-                        .or_default()
-                        .push(process);
+                    pid_map.entry(pid_entry.id).or_default().push(process);
                 }
                 Err(e) => {
                     error!("Failed to read from iterator: {}", e);
@@ -154,119 +157,116 @@ impl App {
         let sort_col = Arc::clone(&self.sorted_column);
         let graphs_bpf_program = Arc::clone(&self.graphs_bpf_program);
 
-        thread::spawn(move || loop {
-            let loop_start = Instant::now();
+        thread::spawn(move || {
+            let mut bpf_metrics = BpfMetrics::new();
+            bpf_metrics.register_prog_metrics(
+                [
+                    ProgMetric::Uptime,
+                    ProgMetric::RunTime,
+                    ProgMetric::RunCount,
+                ]
+                .iter(),
+            );
+            let mut buffer = String::new();
 
-            let mut items = items.lock().unwrap();
-            let map: HashMap<u32, BpfProgram> =
-                items.drain(..).map(|prog| (prog.id, prog)).collect();
+            loop {
+                let loop_start = Instant::now();
+                bpf_metrics.collect_metrics();
 
-            let filter = filter.lock().unwrap();
-            let filter_str = filter.value().to_lowercase();
-            drop(filter);
+                let mut items = items.lock().unwrap();
+                let map: HashMap<u32, BpfProgram> =
+                    items.drain(..).map(|prog| (prog.id, prog)).collect();
 
-            let pid_map = get_pid_map(&iter_link);
-            let iter = ProgInfoIter::default();
-            for prog in iter {
-                let instant = Instant::now();
+                let filter = filter.lock().unwrap();
+                let filter_str = filter.value().to_lowercase();
+                drop(filter);
 
-                let prog_name = match prog.name.to_str() {
-                    Ok(name) => name.to_string(),
-                    Err(_) => continue,
+                let pid_map = get_pid_map(&iter_link);
+
+                buffer.clear();
+                if let Err(_) = bpf_metrics.export_metrics(&mut buffer) {
+                    buffer.push_str("# EOF\n");
+                }
+
+                let (_, iter) = deserialize(&buffer).unwrap();
+                for mut bpf_program in iter {
+                    // Skip bpf program if it does not match filter
+                    if !filter_str.is_empty()
+                        && !bpf_program.bpf_type.to_lowercase().contains(&filter_str)
+                        && !bpf_program.name.to_lowercase().contains(&filter_str)
+                    {
+                        continue;
+                    }
+
+                    let processes = pid_map.get(&bpf_program.id).cloned().unwrap_or_default();
+                    bpf_program.processes = processes;
+
+                    if let Some(prev_bpf_program) = map.get(&bpf_program.id) {
+                        bpf_program.prev_runtime_ns = prev_bpf_program.run_time_ns;
+                        bpf_program.prev_run_cnt = prev_bpf_program.run_cnt;
+                        bpf_program.period_ns = bpf_program.uptime - prev_bpf_program.uptime;
+                    }
+
+                    if let Some(graphs_bpf_program) = graphs_bpf_program.lock().unwrap().as_ref() {
+                        if bpf_program.id == graphs_bpf_program.id {
+                            let mut data_buf = data_buf.lock().unwrap();
+                            data_buf.push_back(PeriodMeasure {
+                                cpu_time_percent: bpf_program.cpu_time_percent(),
+                                events_per_sec: bpf_program.events_per_second(),
+                                average_runtime_ns: bpf_program.period_average_runtime_ns(),
+                            });
+                        }
+                    }
+
+                    items.push(bpf_program);
+                }
+
+                // Sort items based on index of the column
+                let sort_col = sort_col.lock().unwrap();
+                match *sort_col {
+                    SortColumn::Ascending(col_idx) | SortColumn::Descending(col_idx) => {
+                        match col_idx {
+                            1 => items.sort_unstable_by(|a, b| a.bpf_type.cmp(&b.bpf_type)),
+                            2 => items.sort_unstable_by(|a, b| a.name.cmp(&b.name)),
+                            3 => items.sort_unstable_by(|a, b| {
+                                a.period_average_runtime_ns()
+                                    .cmp(&b.period_average_runtime_ns())
+                            }),
+                            4 => items.sort_unstable_by(|a, b| {
+                                a.total_average_runtime_ns()
+                                    .cmp(&b.total_average_runtime_ns())
+                            }),
+                            5 => items.sort_unstable_by(|a, b| {
+                                a.events_per_second().cmp(&b.events_per_second())
+                            }),
+                            6 => items.sort_unstable_by(|a, b| {
+                                a.cpu_time_percent()
+                                    .partial_cmp(&b.cpu_time_percent())
+                                    .unwrap()
+                            }),
+                            _ => items.sort_unstable_by_key(|item| item.id),
+                        }
+                        if let SortColumn::Descending(_) = *sort_col {
+                            items.reverse();
+                        }
+                    }
+                    SortColumn::NoOrder => {}
+                }
+
+                // Explicitly drop the remaining MutexGuards
+                drop(items);
+                drop(sort_col);
+
+                // Adjust sleep duration to maintain a 1-second sample period, accounting for loop
+                // processing time.
+                let elapsed = loop_start.elapsed();
+                let sleep = if elapsed > Duration::from_secs(1) {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_secs(1) - elapsed
                 };
-
-                if prog_name.is_empty() {
-                    continue;
-                }
-
-                // Skip bpf program if it does not match filter
-                let bpf_type = prog.ty.to_string();
-                if !filter_str.is_empty()
-                    && !bpf_type.to_lowercase().contains(&filter_str)
-                    && !prog_name.to_lowercase().contains(&filter_str)
-                {
-                    continue;
-                }
-
-                let processes = pid_map.get(&prog.id).cloned().unwrap_or_default();
-
-                let mut bpf_program = BpfProgram {
-                    id: prog.id,
-                    bpf_type,
-                    name: prog_name,
-                    prev_runtime_ns: 0,
-                    run_time_ns: prog.run_time_ns,
-                    prev_run_cnt: 0,
-                    run_cnt: prog.run_cnt,
-                    instant,
-                    period_ns: 0,
-                    processes,
-                };
-
-                if let Some(prev_bpf_program) = map.get(&bpf_program.id) {
-                    bpf_program.prev_runtime_ns = prev_bpf_program.run_time_ns;
-                    bpf_program.prev_run_cnt = prev_bpf_program.run_cnt;
-                    bpf_program.period_ns = prev_bpf_program.instant.elapsed().as_nanos();
-                }
-
-                if let Some(graphs_bpf_program) = graphs_bpf_program.lock().unwrap().as_ref() {
-                    if bpf_program.id == graphs_bpf_program.id {
-                        let mut data_buf = data_buf.lock().unwrap();
-                        data_buf.push_back(PeriodMeasure {
-                            cpu_time_percent: bpf_program.cpu_time_percent(),
-                            events_per_sec: bpf_program.events_per_second(),
-                            average_runtime_ns: bpf_program.period_average_runtime_ns(),
-                        });
-                    }
-                }
-
-                items.push(bpf_program);
+                thread::sleep(sleep);
             }
-
-            // Sort items based on index of the column
-            let sort_col = sort_col.lock().unwrap();
-            match *sort_col {
-                SortColumn::Ascending(col_idx) | SortColumn::Descending(col_idx) => {
-                    match col_idx {
-                        1 => items.sort_unstable_by(|a, b| a.bpf_type.cmp(&b.bpf_type)),
-                        2 => items.sort_unstable_by(|a, b| a.name.cmp(&b.name)),
-                        3 => items.sort_unstable_by(|a, b| {
-                            a.period_average_runtime_ns()
-                                .cmp(&b.period_average_runtime_ns())
-                        }),
-                        4 => items.sort_unstable_by(|a, b| {
-                            a.total_average_runtime_ns()
-                                .cmp(&b.total_average_runtime_ns())
-                        }),
-                        5 => items.sort_unstable_by(|a, b| {
-                            a.events_per_second().cmp(&b.events_per_second())
-                        }),
-                        6 => items.sort_unstable_by(|a, b| {
-                            a.cpu_time_percent()
-                                .partial_cmp(&b.cpu_time_percent())
-                                .unwrap()
-                        }),
-                        _ => items.sort_unstable_by_key(|item| item.id),
-                    }
-                    if let SortColumn::Descending(_) = *sort_col {
-                        items.reverse();
-                    }
-                }
-                SortColumn::NoOrder => {}
-            }
-
-            // Explicitly drop the remaining MutexGuards
-            drop(items);
-            drop(sort_col);
-
-            // Adjust sleep duration to maintain a 1-second sample period, accounting for loop processing time.
-            let elapsed = loop_start.elapsed();
-            let sleep = if elapsed > Duration::from_secs(1) {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(1) - elapsed
-            };
-            thread::sleep(sleep);
         });
     }
 
@@ -277,7 +277,6 @@ impl App {
         self.max_runtime = 0;
         self.mode = Mode::Graph;
         *self.graphs_bpf_program.lock().unwrap() = self.selected_program().clone();
-
     }
 
     pub fn show_table(&mut self) {
@@ -451,7 +450,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 1,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
@@ -464,7 +463,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 1,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
@@ -512,7 +511,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 1,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
@@ -525,7 +524,7 @@ mod tests {
             run_time_ns: 200,
             prev_run_cnt: 1,
             run_cnt: 2,
-            instant: Instant::now(),
+            uptime: 0,
             period_ns: 0,
             processes: vec![],
         };
