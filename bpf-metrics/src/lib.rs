@@ -18,8 +18,8 @@
 //! let map_metrics = [MapMetric::MaxEntries];
 //! bpf_metrics.register_map_metrics(map_metrics.iter());
 //!
-//! // let link_metrics = [];
-//! // bpf_metrics.register_link_metrics(&link_metrics);
+//! let link_metrics = [];
+//! bpf_metrics.register_link_metrics(link_metrics.iter());
 //!
 //! // Collect bpf metrics from the host
 //! bpf_metrics.collect_metrics();

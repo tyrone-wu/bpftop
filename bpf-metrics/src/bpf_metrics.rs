@@ -3,10 +3,7 @@
 use prometheus_client::{encoding::text, registry::Registry};
 
 use crate::{
-    map_info::MapLabels,
-    metric_collection::{MetricCollection, MetricFamily},
-    prog_info::{ProgLabels, ProgMetric},
-    MapMetric,
+    link_info::LinkLabels, map_info::MapLabels, metric_collection::{MetricCollection, MetricFamily}, prog_info::{ProgLabels, ProgMetric}, LinkMetric, MapMetric
 };
 
 /// BPF metrics registry and collector.
@@ -113,5 +110,28 @@ impl BpfMetrics {
             metric_options,
         );
         self.metrics.push(Box::new(map_metrics));
+    }
+
+    /// Register [`LinkMetric`]s of interest into the registry.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use bpf_metrics::{BpfMetrics, LinkMetric};
+    ///
+    /// let mut bpf_metrics = BpfMetrics::new();
+    ///
+    /// let metrics = [];
+    /// bpf_metrics.register_link_metrics(metrics.iter());
+    /// ```
+    pub fn register_link_metrics<'a>(
+        &mut self,
+        metric_options: impl Iterator<Item = &'a LinkMetric>,
+    ) {
+        let link_metrics = MetricCollection::<LinkMetric, LinkLabels>::init_with_metrics(
+            &mut self.registry,
+            metric_options,
+        );
+        self.metrics.push(Box::new(link_metrics));
     }
 }
